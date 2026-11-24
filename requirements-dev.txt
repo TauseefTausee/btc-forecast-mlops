@@ -1,0 +1,6 @@
+# Lint / test / pipeline-compile tooling (CI and local development).
+pytest==8.3.4
+pytest-cov==6.0.0
+flake8==7.1.1
+black==24.10.0
+kfp==2.10.1

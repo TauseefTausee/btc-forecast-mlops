@@ -1,0 +1,43 @@
+# In-cluster load generator. Traffic goes through the ClusterIP Service, so it
+# is spread across ALL pods (kubectl port-forward would pin it to one pod).
+# The locustfile ConfigMap is created by scripts/load_test_k8s.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: locust-load-test
+  namespace: btc-mlops
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: locust-load-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: locust
+          image: locustio/locust:2.32.4
+          args:
+            - -f
+            - /mnt/locust/locustfile.py
+            - --host
+            - http://btc-forecast-api.btc-mlops.svc.cluster.local
+            - --headless
+            - --users
+            - "80"
+            - --spawn-rate
+            - "10"
+            - --run-time
+            - 5m
+            - --only-summary
+          resources:
+            requests: {cpu: 200m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - name: locustfile
+              mountPath: /mnt/locust
+      volumes:
+        - name: locustfile
+          configMap:
+            name: locustfile

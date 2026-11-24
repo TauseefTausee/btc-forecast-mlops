@@ -1,0 +1,52 @@
+digraph G {
+  rankdir=LR; compound=true; newrank=true;
+  graph [fontname="Helvetica", fontsize=12, pad=0.3, nodesep=0.35, ranksep=0.6, bgcolor="white"];
+  node  [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#5b6577", penwidth=1.2];
+  edge  [fontname="Helvetica", fontsize=9, color="#5b6577", fontcolor="#3b4252"];
+
+  src [label="Market data APIs\nyfinance → Binance → CoinGecko", shape=cylinder, fillcolor="#fff4e0", color="#c98a1b"];
+
+  subgraph cluster_ci { label="GitHub Actions (ci_cd.yml)"; style="rounded,dashed"; color="#2f6fb3"; fontcolor="#2f6fb3";
+    gh   [label="git push / PR\n→ main"];
+    lint [label="flake8 + black\npytest (28 tests)\nKFP compile"];
+    img  [label="docker build\ntag :<sha> + :latest"];
+    gh -> lint -> img;
+  }
+  hub [label="Docker Hub\nbtc-forecast-api\nbtc-forecast-trainer", shape=cylinder, fillcolor="#e8f1fb", color="#2f6fb3"];
+  img -> hub [label="push (DOCKER_USERNAME/\nDOCKER_PASSWORD secrets)"];
+
+  subgraph cluster_compose { label="docker-compose (local)"; style="rounded,dashed"; color="#2e8b57"; fontcolor="#2e8b57";
+    pg [label="Postgres\n(Airflow metadata)", shape=cylinder, fillcolor="#eef8f1", color="#2e8b57"];
+    subgraph cluster_dag { label="Airflow DAG btc_etl_pipeline  (daily 00:30 UTC)"; style="rounded"; color="#2e8b57";
+      f [label="fetch_data"]; p [label="preprocess_features\nMA7/MA30, volatility,\nRSI, lagged returns"];
+      t [label="train_evaluate\nXGBoost ×7 horizons\nholdout = last 7 days"];
+      b [label="check_threshold\nMAPE ≤ 10%?", shape=diamond, fillcolor="#fffbe6"];
+      r [label="register_model"]; rl [label="reload_api\nPOST /reload"];
+      f -> p -> t -> b; b -> r [label="pass"]; r -> rl;
+    }
+    capi [label="Flask API\n(compose)"];
+  }
+  store [label="Shared model store\n./shared/models\nregistry.json · versions/ · data/", shape=folder, fillcolor="#f4efff", color="#7a5cc4"];
+
+  subgraph cluster_k8s { label="Minikube · namespace btc-mlops"; style="rounded"; color="#c0392b"; fontcolor="#c0392b";
+    ing [label="Ingress (NGINX)\nbtc-forecast.local"];
+    svc [label="Service ClusterIP :80→5000\n+ NodePort 30080"];
+    subgraph cluster_dep { label="Deployment (3 replicas, HPA 2–8 @ 60% CPU)"; style="rounded,filled"; fillcolor="#fdf1f0"; color="#c0392b";
+      p1 [label="pod: gunicorn + Flask\n/health /predict /metrics"]; p2 [label="pod"]; p3 [label="pod"];
+    }
+    cm  [label="ConfigMap + Secret\n(env vars)", shape=note, fillcolor="#fffbe6"];
+    pvc [label="PVC btc-models-pvc\n→ /app/models", shape=cylinder, fillcolor="#f4efff", color="#7a5cc4"];
+    ing -> svc -> {p1 p2 p3};
+    cm -> p1 [style=dashed, arrowhead=none];
+    {p1 p2 p3} -> pvc [style=dashed, arrowhead=none];
+  }
+  kfp [label="Kubeflow Pipeline\ningest → features →\ntrain → log_metrics", fillcolor="#eef3ff"];
+  user [label="Client / Locust", shape=ellipse, fillcolor="#f5f5f5"];
+
+  src -> f; src -> kfp [style=dashed];
+  t -> store [label="candidate"]; r -> store [label="promote"]; rl -> capi;
+  store -> capi [style=dashed]; store -> pvc [label="minikube mount", style=bold, color="#7a5cc4"];
+  hub -> p2 [label="image pull", lhead=cluster_dep];
+  hub -> kfp [style=dashed, label="trainer image"];
+  user -> ing [label="POST /predict"];
+}

@@ -1,0 +1,231 @@
+# PIPELINE DEFINITION
+# Name: btc-7day-forecast-training
+# Description: Ingest BTC-USD data, engineer features, train and evaluate the 7-day forecaster
+# Inputs:
+#    days: int [Default: 1500.0]
+#    mape_threshold: float [Default: 10.0]
+components:
+  comp-generate-features:
+    executorLabel: exec-generate-features
+    inputDefinitions:
+      artifacts:
+        raw_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        features:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ingest-data:
+    executorLabel: exec-ingest-data
+    inputDefinitions:
+      parameters:
+        days:
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        raw_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-log-metrics:
+    executorLabel: exec-log-metrics
+    inputDefinitions:
+      artifacts:
+        summary:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: BOOLEAN
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        features:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        mape_threshold:
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        summary:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-generate-features:
+      container:
+        args:
+        - --input
+        - '{{$.inputs.artifacts[''raw_data''].path}}'
+        - --output
+        - '{{$.outputs.artifacts[''features''].path}}'
+        command:
+        - python
+        - -m
+        - src.features
+        image: docker.io/tauseeftausee/btc-forecast-trainer:latest
+    exec-ingest-data:
+      container:
+        args:
+        - --days
+        - '{{$.inputs.parameters[''days'']}}'
+        - --output
+        - '{{$.outputs.artifacts[''raw_data''].path}}'
+        command:
+        - python
+        - -m
+        - src.etl_fetch
+        image: docker.io/tauseeftausee/btc-forecast-trainer:latest
+    exec-log-metrics:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - log_metrics
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.10.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef log_metrics(summary: Input[Artifact], metrics: Output[Metrics])\
+          \ -> bool:\n    \"\"\"Surface MAE / RMSE / MAPE in the KFP UI and return\
+          \ the gate result.\"\"\"\n    import json\n\n    with open(summary.path)\
+          \ as fh:\n        result = json.load(fh)\n    m = result[\"metrics\"]\n\
+          \    for key in (\"mae\", \"rmse\", \"mape\", \"naive_mape\", \"mape_threshold\"\
+          ):\n        metrics.log_metric(key, float(m[key]))\n    metrics.log_metric(\"\
+          registered\", float(result.get(\"registered\", False)))\n    metrics.metadata[\"\
+          model_version\"] = result[\"version\"]\n    return bool(result[\"passed\"\
+          ])\n\n"
+        image: python:3.10-slim
+    exec-train-model:
+      container:
+        args:
+        - --features
+        - '{{$.inputs.artifacts[''features''].path}}'
+        - --model-dir
+        - '{{$.outputs.artifacts[''model''].path}}'
+        - --threshold
+        - '{{$.inputs.parameters[''mape_threshold'']}}'
+        - --register
+        - --summary-out
+        - '{{$.outputs.artifacts[''summary''].path}}'
+        command:
+        - python
+        - -m
+        - src.train_forecast
+        image: docker.io/tauseeftausee/btc-forecast-trainer:latest
+        resources:
+          resourceCpuLimit: '2'
+          resourceCpuRequest: 500m
+          resourceMemoryLimit: 2G
+pipelineInfo:
+  description: Ingest BTC-USD data, engineer features, train and evaluate the 7-day
+    forecaster
+  name: btc-7day-forecast-training
+root:
+  dag:
+    tasks:
+      generate-features:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-generate-features
+        dependentTasks:
+        - ingest-data
+        inputs:
+          artifacts:
+            raw_data:
+              taskOutputArtifact:
+                outputArtifactKey: raw_data
+                producerTask: ingest-data
+        taskInfo:
+          name: Feature engineering
+      ingest-data:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ingest-data
+        inputs:
+          parameters:
+            days:
+              componentInputParameter: days
+        taskInfo:
+          name: Ingest BTC-USD data
+      log-metrics:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-log-metrics
+        dependentTasks:
+        - train-model
+        inputs:
+          artifacts:
+            summary:
+              taskOutputArtifact:
+                outputArtifactKey: summary
+                producerTask: train-model
+        taskInfo:
+          name: Log metrics
+      train-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - generate-features
+        inputs:
+          artifacts:
+            features:
+              taskOutputArtifact:
+                outputArtifactKey: features
+                producerTask: generate-features
+          parameters:
+            mape_threshold:
+              componentInputParameter: mape_threshold
+        taskInfo:
+          name: Train & evaluate model
+  inputDefinitions:
+    parameters:
+      days:
+        defaultValue: 1500.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      mape_threshold:
+        defaultValue: 10.0
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.10.1

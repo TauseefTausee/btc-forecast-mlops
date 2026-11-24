@@ -1,0 +1,39 @@
+# D2: persistent storage for model artifacts + historical data, mounted at
+# /app/models in every API pod. Survives pod restarts and rescheduling.
+#
+# The PV is a hostPath on the Minikube/Kind node. Running
+#   minikube mount ./shared/models:/mnt/btc-models --uid 10001 --gid 10001
+# before deploying makes it the *same* folder Airflow (docker-compose) writes
+# to, so a DAG run updates the model served by Kubernetes.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: btc-models-pv
+  labels:
+    app: btc-forecast-api
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce          # all pods run on the single Minikube node
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/btc-models
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: btc-models-pvc
+  namespace: btc-mlops
+  labels:
+    app: btc-forecast-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  volumeName: btc-models-pv
+  resources:
+    requests:
+      storage: 2Gi
